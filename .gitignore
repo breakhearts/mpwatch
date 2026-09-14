@@ -1,0 +1,27 @@
+# Local configuration and private runtime data
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+cookies*.json
+cookies*.txt
+auth*.json
+data/
+var/
+
+# Python tooling
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/

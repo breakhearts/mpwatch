@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mpwatch"
+version = "0.1.0"
+description = "Local WeRead official-account article monitor"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28,<0.29", "beautifulsoup4>=4.13,<5", "filelock>=3.18,<4"]
+
+[project.optional-dependencies]
+auth = ["playwright>=1.55,<2"]
+
+[project.scripts]
+mpwatch = "mpwatch.cli:main"
+
+[dependency-groups]
+dev = ["ruff>=0.12,<1"]
+
+[tool.ruff]
+line-length = 100
