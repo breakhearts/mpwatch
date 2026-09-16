@@ -1,12 +1,15 @@
 """Interactive first-party QR login, with verified atomic cookie persistence."""
 
+import json
 import os
 import sys
 import tempfile
 import time
 from contextlib import closing
+from http.cookies import SimpleCookie
 from pathlib import Path
 
+import httpx
 from filelock import FileLock
 
 from .collector import CollectError, Collector
@@ -54,6 +57,72 @@ def save_cookie(path, cookie):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def renew_cookie(path, previous=None):
+    """Renew once under the login lock; verify before replacing credentials."""
+    path = Path(path)
+    with FileLock(path.with_name(path.name + ".lock"), timeout=0):
+        current = path.read_text(encoding="utf-8-sig").strip()
+        if previous is not None and current != previous:
+            verify(current)
+            return current
+        parsed = SimpleCookie()
+        parsed.load(current)
+        if not parsed.get("wr_rt"):
+            raise CollectError("reauth_required")
+        values = {name: morsel.value for name, morsel in parsed.items()}
+        with httpx.Client(follow_redirects=False, trust_env=False) as client:
+            try:
+                response = client.post(
+                    "https://weread.qq.com/web/login/renewal",
+                    headers={
+                        "Cookie": current,
+                        "Origin": "https://weread.qq.com",
+                        "Referer": "https://weread.qq.com/",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    json={"rq": "%2Fweb%2Fbook%2Fread", "ql": False},
+                    timeout=30,
+                )
+            except httpx.RequestError:
+                raise CollectError("renewal_network") from None
+            if response.status_code != 200:
+                kind = "reauth_required" if response.status_code == 401 else "renewal_http"
+                raise CollectError(kind, code=response.status_code)
+            try:
+                payload = Collector._json(response)
+            except CollectError as error:
+                if error.kind == "auth":
+                    raise CollectError("reauth_required", code=error.code) from None
+                raise
+            if payload.get("succ") != 1:
+                raise CollectError("renewal_unconfirmed")
+            metadata = []
+            for cookie in response.cookies.jar:
+                if cookie.domain.lstrip(".") != "weread.qq.com":
+                    continue
+                if cookie.is_expired():
+                    values.pop(cookie.name, None)
+                else:
+                    values[cookie.name] = cookie.value
+                metadata.append({"name": cookie.name, "expires": cookie.expires})
+            candidate = cookie_header([{"name": k, "value": v} for k, v in values.items()])
+            if not candidate:
+                raise CollectError("reauth_required")
+            try:
+                verify(candidate)
+            except CollectError as error:
+                if error.kind == "auth":
+                    raise CollectError("reauth_required", code=error.code) from None
+                raise
+            save_cookie(path, candidate)
+            # Informational only: never used instead of real authentication checks.
+            save_cookie(
+                path.with_name(path.name + ".metadata.json"),
+                json.dumps({"renewed_at": time.time(), "response_cookies": metadata}),
+            )
+            return candidate
 
 
 def wait_for_login(

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from filelock import Timeout
 
-from .auth import AuthError, login, verify
+from .auth import AuthError, login, renew_cookie, verify
 from .collector import CollectError, Collector
 from .storage import Store, writer
 from .subscriptions import SubscriptionError, resolve, subscribe
@@ -145,7 +145,10 @@ def read_cookie():
 
 
 def make_collector():
-    return Collector(read_cookie())
+    return Collector(
+        read_cookie(),
+        renew=lambda previous: renew_cookie(private_path("MPWATCH_COOKIE_FILE"), previous),
+    )
 
 
 def parser():
@@ -161,6 +164,7 @@ def parser():
     )
     auth_login.add_argument("--timeout", type=positive, default=300)
     auth_commands.add_parser("status", help="verify saved Cookie against WeRead")
+    auth_commands.add_parser("renew", help="renew saved authentication without QR login")
     sources = commands.add_parser("sources", help="read WeRead shelf (no remote writes)")
     sources.add_argument("--local", action="store_true", help="list local configuration offline")
     search = commands.add_parser("search", help="search WeRead official accounts by name")
@@ -201,8 +205,23 @@ def main(argv=None):
                         timeout=args.timeout,
                     ),
                 }
+            elif args.auth_command == "renew":
+                result = {
+                    "schema_version": 1,
+                    **verify(renew_cookie(private_path("MPWATCH_COOKIE_FILE"))),
+                    "renewal": "verified",
+                }
             else:
-                result = {"schema_version": 1, **verify(read_cookie())}
+                with closing(make_collector()) as collector:
+                    sources = collector.sources()
+                    result = {
+                        "schema_version": 1,
+                        "status": "authenticated",
+                        "sources": sources,
+                        "source_count": len(sources),
+                        "verification": "weread_shelf",
+                        "renewal_attempted": collector.renew_attempted,
+                    }
         elif args.command == "search":
             if not args.keyword.strip():
                 raise ValueError("empty_keyword")
@@ -264,6 +283,8 @@ def main(argv=None):
                         code = {"complete": 0, "partial": 2, "failed": 1}[result["status"]]
     except CollectError as error:
         result, code = {"schema_version": 1, "status": "failed", "error": error.as_dict()}, 1
+        if error.kind == "reauth_required":
+            result["next_action"] = "mpwatch auth login"
     except AuthError as error:
         result, code = {"schema_version": 1, "status": "failed", "error": str(error)}, 1
     except SubscriptionError as error:
