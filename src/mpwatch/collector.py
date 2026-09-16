@@ -19,7 +19,16 @@ class CollectError(Exception):
 
     @property
     def stop(self):
-        return self.kind in {"auth", "blocked", "rate_limited", "budget"}
+        return self.kind in {
+            "auth",
+            "blocked",
+            "rate_limited",
+            "budget",
+            "reauth_required",
+            "renewal_network",
+            "renewal_http",
+            "renewal_unconfirmed",
+        }
 
     def as_dict(self):
         return {"kind": self.kind, "code": self.code}
@@ -124,6 +133,7 @@ class Collector:
         sleep=time.sleep,
         interval=2.0,
         budget=300.0,
+        renew=None,
     ):
         self.client = client or httpx.Client(follow_redirects=False, trust_env=False)
         self.headers = {
@@ -135,6 +145,8 @@ class Collector:
         self.clock, self.sleep, self.interval = clock, sleep, interval
         self.deadline = clock() + budget
         self.last_request = None
+        self.renew = renew
+        self.renew_attempted = False
 
     def close(self):
         self.client.close()
@@ -146,6 +158,23 @@ class Collector:
             self.sleep(delay)
 
     def _get(self, path, params, *, html=False):
+        try:
+            return self._get_once(path, params, html=html)
+        except CollectError as error:
+            # A list-only -2041 is not evidence that the session expired.
+            if (
+                error.kind != "auth"
+                or (path == "/web/mp/articles" and error.code == -2041)
+                or self.renew is None
+                or self.renew_attempted
+            ):
+                raise
+            self.renew_attempted = True
+            self.headers["Cookie"] = self.renew(self.headers["Cookie"])
+            self.client.cookies.clear()
+            return self._get_once(path, params, html=html)
+
+    def _get_once(self, path, params, *, html=False):
         for attempt in range(3):
             if self.last_request is not None:
                 self._wait(max(0, self.interval - (self.clock() - self.last_request)))
